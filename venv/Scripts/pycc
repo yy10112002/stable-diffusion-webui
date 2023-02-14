@@ -1,0 +1,3 @@
+#!D:\Tool\webui\stable-diffusion-webui\venv\Scripts\python.exe
+from numba.pycc import main
+main()

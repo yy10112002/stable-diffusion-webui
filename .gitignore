@@ -5,7 +5,12 @@ __pycache__
 /ESRGAN/*
 /SwinIR/*
 /repositories
-/venv
+/venv/share
+/venv/Lib
+/venv/Include
+/venv/dev.txt
+/venv/pyvenv.cfg
+/venv/x.txt
 /tmp
 /model.ckpt
 /models/**/*

@@ -3,6 +3,8 @@ import io
 import time
 import datetime
 import uvicorn
+import requests
+
 from threading import Lock
 from io import BytesIO
 from gradio.processing_utils import decode_base64_to_file
@@ -11,7 +13,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from secrets import compare_digest
 
 import modules.shared as shared
-from modules import sd_samplers, deepbooru, sd_hijack, images, scripts, ui, postprocessing
+from modules import sd_samplers, deepbooru, sd_hijack, images, scripts, ui, postprocessing, foo
 from modules.api.models import *
 from modules.processing import StableDiffusionProcessingTxt2Img, StableDiffusionProcessingImg2Img, process_images
 from modules.textual_inversion.textual_inversion import create_embedding, train_embedding
@@ -124,6 +126,7 @@ class Api:
         self.queue_lock = queue_lock
         api_middleware(self.app)
         self.add_api_route("/sdapi/v1/txt2img", self.text2imgapi, methods=["POST"], response_model=TextToImageResponse)
+        self.add_api_route("/sdapi/v1/txt2imgurl", self.txt2imgurl, methods=["POST"], response_model=TextToImageUrlResponse)
         self.add_api_route("/sdapi/v1/img2img", self.img2imgapi, methods=["POST"], response_model=ImageToImageResponse)
         self.add_api_route("/sdapi/v1/extra-single-image", self.extras_single_image_api, methods=["POST"], response_model=ExtrasSingleImageResponse)
         self.add_api_route("/sdapi/v1/extra-batch-images", self.extras_batch_images_api, methods=["POST"], response_model=ExtrasBatchImagesResponse)
@@ -206,6 +209,53 @@ class Api:
         b64images = list(map(encode_pil_to_base64, processed.images))
 
         return TextToImageResponse(images=b64images, parameters=vars(txt2imgreq), info=processed.js())
+    
+    def txt2imgurl(self, txt2imgreq: StableDiffusionTxt2ImgProcessingAPI):
+        script, script_idx = self.get_script(txt2imgreq.script_name, scripts.scripts_txt2img)
+
+        populate = txt2imgreq.copy(update={ # Override __init__ params
+            "sampler_name": validate_sampler_name(txt2imgreq.sampler_name or txt2imgreq.sampler_index),
+            "do_not_save_samples": True,
+            "do_not_save_grid": True
+            }
+        )
+        if populate.sampler_name:
+            populate.sampler_index = None  # prevent a warning later on
+
+        args = vars(populate)
+        args.pop('script_name', None)
+
+        with self.queue_lock:
+            p = StableDiffusionProcessingTxt2Img(sd_model=shared.sd_model, **args)
+
+            shared.state.begin()
+            if script is not None:
+                p.outpath_grids = opts.outdir_txt2img_grids
+                p.outpath_samples = opts.outdir_txt2img_samples
+                p.script_args = [script_idx + 1] + [None] * (script.args_from - 1) + p.script_args
+                processed = scripts.scripts_txt2img.run(p, *p.script_args)
+            else:
+                processed = process_images(p)
+            shared.state.end()
+
+        b64images = list(map(encode_pil_to_base64, processed.images))
+        
+        image_data = base64.b64decode(b64images[0])
+        img = Image.open(BytesIO(image_data))
+        out_jpg_file = io.BytesIO()
+        out_jpg = img.convert('RGB')
+        out_jpg.save(out_jpg_file, 'jpeg')
+        out_jpg_file.seek(0)
+
+
+        file = {"file": ("file", out_jpg_file, "image/jpeg")}
+        r = requests.post("https://telegra.ph/upload", files=file)
+            
+        file_url = ''
+        if r.status_code == 200:
+            file_url = r.json()[0]["src"]
+            img_url = "https://telegra.ph" + file_url
+        return TextToImageUrlResponse(url=img_url)
 
     def img2imgapi(self, img2imgreq: StableDiffusionImg2ImgProcessingAPI):
         init_images = img2imgreq.init_images
